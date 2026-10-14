@@ -11,6 +11,7 @@
 package comp3011;
 
 import java.io.File;
+import java.util.Optional;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -32,6 +33,7 @@ public class CommandLineController {
     private Integer displayId;
     private File videoFile;
     private String errorMessage;
+    private final List<FrameProcessor> frameProcessors = new ArrayList<>();
 
     public CommandLineController(String[] args) {
         this.args = args.clone();
@@ -46,6 +48,10 @@ public class CommandLineController {
 
     public File getVideoFile() {
         return videoFile;
+    }
+    
+    public List<FrameProcessor> getFrameProcessors() {
+        return List.copyOf(frameProcessors);
     }
 
     public String getErrorMessage() {
@@ -75,18 +81,10 @@ public class CommandLineController {
     private void parse() {
         List<String> videoFiles = new ArrayList<>();
         for (String arg : args) {
-            if ("-h".equals(arg) || "--help".equals(arg)) {
-                helpRequested = true;
-            } else if ("-a".equals(arg) || "--audio".equals(arg)) {
-                audioRequested = true;
-            } else if ("-x".equals(arg) || "--maximise".equals(arg)) {
-                maximiseRequested = true;
-            } else if ("-1".equals(arg) || "--monitor-1".equals(arg)) {
-                setDisplayId(1);
-            } else if ("-2".equals(arg) || "--monitor-2".equals(arg)) {
-                setDisplayId(2);
+            if (arg.startsWith("--")) {
+                parseLongOption(arg);
             } else if (arg.startsWith("-")) {
-                errorMessage = "Unknown option: " + arg;
+                parseStackedShortOptions(arg);
             } else {
                 videoFiles.add(arg);
             }
@@ -100,9 +98,49 @@ public class CommandLineController {
                 errorMessage = "File not found: " + videoFile.getPath();
                 videoFile = null;
             }
-        } else {
-            if (!helpRequested) {
-                errorMessage = "No video file specified.";
+        }  else if (!helpRequested || !frameProcessors.isEmpty()) {
+            errorMessage = "No video file specified.";
+        }
+    }
+
+    private void parseStackedShortOptions(String arg) {
+        if (arg.length() == 1) {
+            errorMessage = "Unknown option: " + arg;
+            return;
+        }
+        for (char c : arg.substring(1).toCharArray()) {
+            switch (c) {
+                case 'h' -> helpRequested = true;
+                case 'a' -> audioRequested = true;
+                case 'x' -> maximiseRequested = true;
+                case '1' -> setDisplayId(1);
+                case '2' -> setDisplayId(2);
+                default -> {
+                    Optional<FrameEffectOption> effect = FrameEffectOption.fromShortName(c);
+                    if (effect.isPresent()) {
+                        frameProcessors.add(effect.get().create());
+                    } else {
+                        errorMessage = "Unknown option: -" + c;
+                    }
+                }
+            }
+        }
+    }
+
+    private void parseLongOption(String arg) {
+        switch (arg.substring(2)) {
+            case "help" -> helpRequested = true;
+            case "audio" -> audioRequested = true;
+            case "maximise" -> maximiseRequested = true;
+            case "monitor-1" -> setDisplayId(1);
+            case "monitor-2" -> setDisplayId(2);
+            default -> {
+                Optional<FrameEffectOption> effect = FrameEffectOption.fromLongName(arg.substring(2));
+                if (effect.isPresent()) {
+                    frameProcessors.add(effect.get().create());
+                } else {
+                    errorMessage = "Unknown option: " + arg;
+                }
             }
         }
     }
@@ -124,5 +162,15 @@ public class CommandLineController {
         System.out.println("  -x, --maximise     Open the player maximised");
         System.out.println("  -1, --monitor-1    Open the player on display 1");
         System.out.println("  -2, --monitor-2    Open the player on display 2");
+        System.out.println();
+        System.out.println("Frame processors:");
+        for (FrameEffectOption option : FrameEffectOption.values()) {
+            System.out.println(String.format("  -%c, %-19s%s",
+                    option.shortName(), "--" + option.longName(), option.description()));
+        }
+        System.out.println();
+        System.out.println("Frame processors are applied in command-line order and may be repeated.");
+        System.out.println("Example: -nssnfwyvdjmbp numbers, scratches twice, numbers again, flickers,");
+        System.out.println("converts, warms, vignettes, dusts, jitters, mottles, bleeds, then peppers.");
     }
 }

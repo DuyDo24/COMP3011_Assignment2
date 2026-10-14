@@ -11,6 +11,7 @@
 package comp3011;
 
 import java.io.File;
+import java.util.List;
 import java.util.function.BiConsumer;
 
 import javafx.scene.Scene;
@@ -33,24 +34,18 @@ public class VideoPlayerController {
 
     public VideoPlayerController(
             boolean audioEnabled,
+            List<FrameProcessor> frameProcessors,
             BiConsumer<Integer, Integer> videoSizeChangedHandler) {
         this.view = new VideoPlayerView();
         this.videoSizeChangedHandler = videoSizeChangedHandler;
         model = new VideoPlayerModel(
                 audioEnabled,
+                frameProcessors,
                 this::onVideoSizeChanged,
                 this::onFrameReady,
                 this::onStatusChanged,
                 this::onPlaybackStateChanged,
                 this::onAudioOutputStateChanged);
-
-        view.getStartOverButton().setOnAction(_ -> startOver());
-        view.getBackFiveButton().setOnAction(_ -> backFiveSeconds());
-        view.getPausePlayButton().setOnAction(_ -> togglePause());
-        view.getForwardFiveButton().setOnAction(_ -> forwardFiveSeconds());
-        view.getStopButton().setOnAction(_ -> stopAndExit());
-        view.getAudioButton().setOnAction(_ -> toggleAudioOutput());
-        view.showAudioEnabled(model.isAudioOutputEnabled());
     }
 
     public void installKeyboardShortcuts(Scene scene) {
