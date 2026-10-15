@@ -34,24 +34,35 @@
       <artifactId>javacv-platform</artifactId>
       <version>${javacv.version}</version>
     </dependency>
+    <dependency>
+     <groupId>org.junit.jupiter</groupId>
+     <artifactId>junit-jupiter</artifactId>
+     <version>5.11.4</version>
+    <scope>test</scope>
+	 </dependency>
   </dependencies>
 
   <build>
-    <plugins>
-      <plugin>
-        <groupId>org.openjfx</groupId>
-        <artifactId>javafx-maven-plugin</artifactId>
-        <version>0.0.8</version>
-        <configuration>
-          <mainClass>comp3011.VideoPlayerApp</mainClass>
-            <options>
-                <option>--enable-native-access=javafx.graphics</option>
-                <option>--enable-native-access=ALL-UNNAMED</option>
-            </options>
-        </configuration>
-      </plugin>
-    </plugins>
-  </build>
+  <plugins>
+    <plugin>
+      <groupId>org.openjfx</groupId>
+      <artifactId>javafx-maven-plugin</artifactId>
+      <version>0.0.8</version>
+      <configuration>
+        <mainClass>comp3011.VideoPlayerApp</mainClass>
+          <options>
+              <option>--enable-native-access=javafx.graphics</option>
+              <option>--enable-native-access=ALL-UNNAMED</option>
+          </options>
+      </configuration>
+    </plugin>
+    <plugin>
+      <groupId>org.apache.maven.plugins</groupId>
+      <artifactId>maven-surefire-plugin</artifactId>
+      <version>3.5.2</version>
+    </plugin>
+  </plugins>
+</build>
 
   <profiles>
     <profile>
