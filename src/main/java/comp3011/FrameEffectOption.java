@@ -1,5 +1,17 @@
 package comp3011;
 
+/**
+ * The single registry of command line selectable frame processors.
+ *
+ *
+ * To add a new effect: write the FrameProcessor subclass, then add one
+ * constant here with its short option, long option, help description and a
+ * constructor reference. The parser and the help text are both driven from
+ * this enum, so nothing else needs to change. Declaration order is the order
+ * shown in the help text.
+ * 
+ */
+
 import java.util.Arrays;
 import java.util.Optional;
 import java.util.function.Supplier;
