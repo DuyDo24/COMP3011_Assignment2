@@ -76,7 +76,7 @@ public final class FramePipeline {
     private interface FrameStep {
         PipelineFrame apply(PipelineFrame frame) throws Exception;
     }
-
+    static final int RESERVED_CORES = 2;
     // Between stages: tiny, because each frame is several megabytes and a stage that is blocked while handing its
     // finished frame on already holds one more.
     private static final int STAGE_QUEUE_CAPACITY = 1;
@@ -125,7 +125,8 @@ public final class FramePipeline {
      */
     public static int defaultStageCount(int processorCount) {
         int cores = Math.max(1, Runtime.getRuntime().availableProcessors());
-        return Math.min(processorCount, cores);
+        int effectCores = Math.max(1, cores - RESERVED_CORES);
+        return Math.min(processorCount, effectCores);
     }
 
     /**
@@ -187,6 +188,7 @@ public final class FramePipeline {
     private void addThread(String name, Runnable body) {
         Thread thread = new Thread(body, name);
         thread.setDaemon(true); // A forgotten pipeline must never keep the JVM alive after the window closes.
+        thread.setPriority(Thread.NORM_PRIORITY - 1);
         threads.add(thread);
     }
 
