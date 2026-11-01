@@ -62,6 +62,11 @@ import javafx.scene.image.Image;
  * joined every pipeline thread. Seek, stop and restart therefore cannot race
  * with decoding, and Thread.start and Thread.join provide the visibility
  * guarantees.</li>
+ * <li>Subtitles: {@code subtitleFetcher} is created, replaced and closed only by
+ * the JavaFX thread. It runs one thread of its own with its own decoder, so it
+ * shares nothing with the pipeline. It reads a volatile playhead and writes
+ * cues to the {@link SubtitleStore}, which the effect stage reads without
+ * locking.</li>
  * </ul>
  */
 public class VideoPlayerModel {
@@ -107,6 +112,7 @@ public class VideoPlayerModel {
     // Owned by the JavaFX thread. The pipeline threads only read the values they need, and only ones that were set
     // before the pipeline was started.
     private FramePipeline pipeline;
+    private SubtitleFetcher subtitleFetcher; // Null unless a subtitle effect was asked for on the command line.
     private File videoFile; // Path to the media that comes from the command line
     private AudioPlayer audioPlayer; // This is ours. It has some real time buffering smarts.
     private boolean playbackOpen; // True when playback is happening.
@@ -145,6 +151,12 @@ public class VideoPlayerModel {
         videoFile = file;
         videoDurationUs = NO_SEEK_REQUEST;
         videoFrameDurationUs = 0;
+
+        // A new file means the old subtitles no longer apply. Closing the fetcher first guarantees that it cannot
+        // add cues after the store has been cleared.
+        stopSubtitleFetcher();
+        SubtitleStore.instance().clear();
+
         startPlayback(0, false, NO_SEEK_REQUEST);
     }
 
@@ -198,6 +210,7 @@ public class VideoPlayerModel {
 
     public void stopPlayback() {
         closePlaybackResources();
+        stopSubtitleFetcher();
         currentTimestampUs = 0;
         pauseRequested = false;
         notifyStatusChanged("Stopped");
@@ -207,6 +220,7 @@ public class VideoPlayerModel {
 
     public void shutdown() {
         closePlaybackResources();
+        stopSubtitleFetcher();
     }
 
     private void seekRelative(long offsetUs) {
@@ -237,6 +251,7 @@ public class VideoPlayerModel {
             grabber.setTimestamp(grabTimestampUs);
             resetPlaybackClock(logicalTimestampUs);
             flushAudioOutput();
+            updateSubtitlePlayhead(logicalTimestampUs); // Subtitles follow the seek without interrupting playback.
             startPipeline();
             notifyPlaybackStateChanged();
         } catch (Exception e) {
@@ -260,6 +275,7 @@ public class VideoPlayerModel {
             resetPlaybackClock(currentTimestampUs);
             playbackOpen = true;
             playbackTimer.start();
+            startSubtitleFetcher(currentTimestampUs);
             startPipeline();
             notifyPlaybackStateChanged();
         } catch (Exception e) {
@@ -324,6 +340,43 @@ public class VideoPlayerModel {
         playbackStartNs = now;
         if (pauseRequested) {
             pauseStartedNs = now;
+        }
+    }
+
+    // ---- Subtitle fetching (JavaFX thread only) ----
+
+    // Subtitles are only fetched when the subtitle effect was asked for on the command line, so a player started
+    // without it never contacts the web server.
+    private boolean subtitlesRequested() {
+        for (FrameProcessor processor : frameProcessors) {
+            if (processor instanceof FrameSubtitler) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The fetcher is kept across seeks, pauses and the end of the video, so chunks already fetched are never fetched
+    // again. It is only replaced when a different file is played.
+    private void startSubtitleFetcher(long playheadUs) {
+        if (subtitleFetcher != null) {
+            subtitleFetcher.setPlayheadUs(playheadUs);
+        } else if (videoFile != null && subtitlesRequested()) {
+            subtitleFetcher = SubtitleFetcher.start(videoFile, SubtitleStore.instance(), playheadUs);
+        }
+    }
+
+    private void stopSubtitleFetcher() {
+        if (subtitleFetcher != null) {
+            subtitleFetcher.close();
+            subtitleFetcher = null;
+        }
+    }
+
+    private void updateSubtitlePlayhead(long playheadUs) {
+        SubtitleFetcher fetcher = subtitleFetcher;
+        if (fetcher != null) {
+            fetcher.setPlayheadUs(playheadUs);
         }
     }
 
@@ -463,6 +516,7 @@ public class VideoPlayerModel {
     private void displayPreparedFrame(PipelineFrame frame, long relativeTimestampUs, long targetTimeNs) {
         currentTimestampUs = logicalPlaybackBaseUs + relativeTimestampUs;
         relativeSeekBaseUs = NO_SEEK_REQUEST;
+        updateSubtitlePlayhead(currentTimestampUs); // A volatile write, so cheap enough for every frame.
 
         // Dump some logging to the console once per second so that real time performance can be monitored.
         if (intFrameRate > 0 && frame.frameNumber() % intFrameRate == 0) {

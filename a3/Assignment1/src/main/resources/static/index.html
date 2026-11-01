@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Speech to Text</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --card: #1a1d24;
+    --border: #2a2e37;
+    --text: #e8e9ec;
+    --text-dim: #8b8f99;
+    --accent: #5b8def;
+    --danger: #e5484d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 40px;
+    width: 100%;
+    max-width: 480px;
+    text-align: center;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0 0 8px;
+  }
+  .subtitle {
+    font-size: 14px;
+    color: var(--text-dim);
+    margin: 0 0 32px;
+  }
+  .record-zone {
+    position: relative;
+    width: 120px;
+    height: 120px;
+    margin: 0 auto 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .pulse-ring {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: var(--danger);
+    opacity: 0;
+  }
+  .pulse-ring.active {
+    animation: pulse 1.5s ease-out infinite;
+  }
+  @keyframes pulse {
+    0%   { transform: scale(0.8); opacity: 0.5; }
+    100% { transform: scale(1.6); opacity: 0; }
+  }
+  #recordBtn {
+    position: relative;
+    z-index: 1;
+    width: 84px;
+    height: 84px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    background: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s, transform 0.15s;
+  }
+  #recordBtn:hover { transform: scale(1.04); }
+  #recordBtn:active { transform: scale(0.96); }
+  #recordBtn.recording {
+    background: var(--danger);
+  }
+  #recordBtn svg {
+    width: 30px;
+    height: 30px;
+    fill: white;
+  }
+  #status {
+    font-size: 14px;
+    color: var(--text-dim);
+    margin: 0 0 28px;
+    min-height: 20px;
+  }
+  #status.recording-text { color: var(--danger); font-weight: 500; }
+  #status.processing-text { color: var(--accent); font-weight: 500; }
+  .transcript-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px;
+    min-height: 70px;
+    text-align: left;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text);
+    white-space: pre-wrap;
+  }
+  .transcript-box.empty {
+    color: var(--text-dim);
+    font-style: italic;
+  }
+  .spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: -2px;
+    margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>Speech to text</h1>
+  <p class="subtitle">Tap to record, tap again to stop</p>
+
+  <div class="record-zone">
+    <div class="pulse-ring" id="pulseRing"></div>
+    <button id="recordBtn" aria-label="Start recording">
+      <svg viewBox="0 0 24 24" id="btnIcon">
+        <circle cx="12" cy="12" r="8"></circle>
+      </svg>
+    </button>
+  </div>
+
+  <p id="status">Ready</p>
+
+  <div class="transcript-box empty" id="transcript">Your transcript will appear here</div>
+</div>
+
+<script>
+let mediaRecorder;
+let audioChunks = [];
+let isRecording = false;
+
+const recordBtn = document.getElementById('recordBtn');
+const pulseRing = document.getElementById('pulseRing');
+const status = document.getElementById('status');
+const transcript = document.getElementById('transcript');
+const btnIcon = document.getElementById('btnIcon');
+
+const MIC_ICON = '<circle cx="12" cy="12" r="8"></circle>';
+const STOP_ICON = '<rect x="6" y="6" width="12" height="12" rx="2"></rect>';
+
+recordBtn.addEventListener('click', async () => {
+  if (!isRecording) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream);
+      audioChunks = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        audioChunks.push(event.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        await uploadAudio(audioBlob);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      isRecording = true;
+
+      recordBtn.classList.add('recording');
+      pulseRing.classList.add('active');
+      btnIcon.innerHTML = STOP_ICON;
+      recordBtn.setAttribute('aria-label', 'Stop recording');
+
+      status.textContent = 'Recording — speak now';
+      status.className = 'recording-text';
+
+      transcript.textContent = 'Your transcript will appear here';
+      transcript.classList.add('empty');
+    } catch (err) {
+      status.textContent = 'Microphone access denied';
+      status.className = '';
+      console.error(err);
+    }
+  } else {
+    mediaRecorder.stop();
+    isRecording = false;
+
+    recordBtn.classList.remove('recording');
+    pulseRing.classList.remove('active');
+    btnIcon.innerHTML = MIC_ICON;
+    recordBtn.setAttribute('aria-label', 'Start recording');
+
+    status.innerHTML = '<span class="spinner"></span>Transcribing';
+    status.className = 'processing-text';
+  }
+});
+
+async function uploadAudio(audioBlob) {
+  const formData = new FormData();
+  formData.append('audio', audioBlob, 'recording.webm');
+
+  try {
+    const response = await fetch('/api/v1/transcribe', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!response.ok) {
+      throw new Error(`Server responded with ${response.status}`);
+    }
+
+    const text = await response.text();
+    transcript.textContent = text;
+    transcript.classList.remove('empty');
+    status.textContent = 'Ready';
+    status.className = '';
+  } catch (err) {
+    transcript.textContent = 'Could not get a transcription. Please try again.';
+    transcript.classList.remove('empty');
+    status.textContent = 'Ready';
+    status.className = '';
+    console.error(err);
+  }
+}
+</script>
+
+</body>
+</html>
