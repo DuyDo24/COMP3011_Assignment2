@@ -32,12 +32,22 @@ public class VideoPlayerController {
     private final VideoPlayerView view;
     private final BiConsumer<Integer, Integer> videoSizeChangedHandler;
 
+    // True only when --subtitle-frames was given. Without it there is no subtitle effect in the pipeline, so there is
+    // nothing for the toggle to switch and the button stays greyed out.
+    private final boolean subtitlesAvailable;
+
     public VideoPlayerController(
             boolean audioEnabled,
             List<FrameProcessor> frameProcessors,
             BiConsumer<Integer, Integer> videoSizeChangedHandler) {
         this.view = new VideoPlayerView();
         this.videoSizeChangedHandler = videoSizeChangedHandler;
+
+        subtitlesAvailable = frameProcessors.stream().anyMatch(processor -> processor instanceof FrameSubtitler);
+        SubtitleStore.instance().setEnabled(subtitlesAvailable); // Begins on if -S was given, off if not.
+        view.showSubtitlesEnabled(subtitlesAvailable);
+        view.getSubtitleButton().setOnAction(_ -> toggleSubtitles());
+
         model = new VideoPlayerModel(
                 audioEnabled,
                 frameProcessors,
@@ -68,6 +78,9 @@ public class VideoPlayerController {
             } else if (event.getCode() == KeyCode.A) {
                 toggleAudioOutput();
                 event.consume();
+            } else if (event.getCode() == KeyCode.S) {
+                toggleSubtitles();
+                event.consume();
             }
         });
     }
@@ -78,6 +91,9 @@ public class VideoPlayerController {
 
     public void play(File file) {
         view.setPlaybackControlsDisabled(false);
+        if (!subtitlesAvailable) {
+            view.getSubtitleButton().setDisable(true);
+        }
         model.play(file);
     }
 
@@ -103,6 +119,17 @@ public class VideoPlayerController {
 
     private void toggleAudioOutput() {
         model.toggleAudioOutput();
+    }
+
+    // Only flips the store's volatile switch and the icon. The pipeline reads the switch on its next frame, so
+    // playback and audio are never touched.
+    private void toggleSubtitles() {
+        if (!subtitlesAvailable) {
+            return;
+        }
+        boolean enabled = !SubtitleStore.instance().isEnabled();
+        SubtitleStore.instance().setEnabled(enabled);
+        view.showSubtitlesEnabled(enabled);
     }
 
     private void stopAndExit() {
