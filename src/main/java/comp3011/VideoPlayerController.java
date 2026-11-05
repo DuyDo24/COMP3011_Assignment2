@@ -11,6 +11,7 @@
 package comp3011;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BiConsumer;
 
@@ -32,10 +33,6 @@ public class VideoPlayerController {
     private final VideoPlayerView view;
     private final BiConsumer<Integer, Integer> videoSizeChangedHandler;
 
-    // True only when --subtitle-frames was given. Without it there is no subtitle effect in the pipeline, so there is
-    // nothing for the toggle to switch and the button stays greyed out.
-    private final boolean subtitlesAvailable;
-
     public VideoPlayerController(
             boolean audioEnabled,
             List<FrameProcessor> frameProcessors,
@@ -43,14 +40,21 @@ public class VideoPlayerController {
         this.view = new VideoPlayerView();
         this.videoSizeChangedHandler = videoSizeChangedHandler;
 
-        subtitlesAvailable = frameProcessors.stream().anyMatch(processor -> processor instanceof FrameSubtitler);
-        SubtitleStore.instance().setEnabled(subtitlesAvailable); // Begins on if -S was given, off if not.
-        view.showSubtitlesEnabled(subtitlesAvailable);
+        // Subtitles start on only if --subtitle-frames was given. Either way they can be toggled during playback, so
+        // when the option is missing the subtitle effect is added here, ready and switched off.
+        boolean subtitlesOnCommandLine = frameProcessors.stream().anyMatch(p -> p instanceof FrameSubtitler);
+        List<FrameProcessor> processors = new ArrayList<>(frameProcessors);
+        if (!subtitlesOnCommandLine) {
+            processors.add(new FrameSubtitler());
+        }
+        // FrameSubtitler's constructor switches the store on, so the real starting state is set after it.
+        SubtitleStore.instance().setEnabled(subtitlesOnCommandLine);
+        view.showSubtitlesEnabled(subtitlesOnCommandLine);
         view.getSubtitleButton().setOnAction(_ -> toggleSubtitles());
 
         model = new VideoPlayerModel(
                 audioEnabled,
-                frameProcessors,
+                processors,
                 this::onVideoSizeChanged,
                 this::onFrameReady,
                 this::onStatusChanged,
@@ -91,9 +95,6 @@ public class VideoPlayerController {
 
     public void play(File file) {
         view.setPlaybackControlsDisabled(false);
-        if (!subtitlesAvailable) {
-            view.getSubtitleButton().setDisable(true);
-        }
         model.play(file);
     }
 
@@ -121,15 +122,13 @@ public class VideoPlayerController {
         model.toggleAudioOutput();
     }
 
-    // Only flips the store's volatile switch and the icon. The pipeline reads the switch on its next frame, so
-    // playback and audio are never touched.
+    // Flips the store's volatile switch and the icon. Playback and audio are never touched. The model is told so that
+    // it can start fetching subtitle text the first time they are switched on.
     private void toggleSubtitles() {
-        if (!subtitlesAvailable) {
-            return;
-        }
         boolean enabled = !SubtitleStore.instance().isEnabled();
         SubtitleStore.instance().setEnabled(enabled);
         view.showSubtitlesEnabled(enabled);
+        model.subtitlesToggled(enabled);
     }
 
     private void stopAndExit() {

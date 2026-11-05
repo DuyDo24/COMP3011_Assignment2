@@ -112,7 +112,7 @@ public class VideoPlayerModel {
     // Owned by the JavaFX thread. The pipeline threads only read the values they need, and only ones that were set
     // before the pipeline was started.
     private FramePipeline pipeline;
-    private SubtitleFetcher subtitleFetcher; // Null unless a subtitle effect was asked for on the command line.
+    private SubtitleFetcher subtitleFetcher; // Null until subtitles are first switched on for the current file.
     private File videoFile; // Path to the media that comes from the command line
     private AudioPlayer audioPlayer; // This is ours. It has some real time buffering smarts.
     private boolean playbackOpen; // True when playback is happening.
@@ -206,6 +206,15 @@ public class VideoPlayerModel {
 
     public boolean isAudioOutputEnabled() {
         return audioOutputEnabled;
+    }
+
+    // Called by the controller, on the JavaFX thread, whenever subtitles are switched on or off. Switching on is when
+    // fetching starts if it has not already. Switching off needs nothing here, because the store's switch is what
+    // hides the text.
+    public void subtitlesToggled(boolean enabled) {
+        if (enabled && playbackOpen) {
+            startSubtitleFetcher(currentTimestampUs);
+        }
     }
 
     public void stopPlayback() {
@@ -345,23 +354,13 @@ public class VideoPlayerModel {
 
     // ---- Subtitle fetching (JavaFX thread only) ----
 
-    // Subtitles are only fetched when the subtitle effect was asked for on the command line, so a player started
-    // without it never contacts the web server.
-    private boolean subtitlesRequested() {
-        for (FrameProcessor processor : frameProcessors) {
-            if (processor instanceof FrameSubtitler) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // The fetcher is kept across seeks, pauses and the end of the video, so chunks already fetched are never fetched
-    // again. It is only replaced when a different file is played.
+    // Nothing is fetched until subtitles are switched on, so the web server and its API key are not used for nothing.
+    // After that the fetcher is kept across seeks, pauses, toggling off and the end of the video, so chunks already
+    // fetched are never fetched again. It is only replaced when a different file is played.
     private void startSubtitleFetcher(long playheadUs) {
         if (subtitleFetcher != null) {
             subtitleFetcher.setPlayheadUs(playheadUs);
-        } else if (videoFile != null && subtitlesRequested()) {
+        } else if (videoFile != null && SubtitleStore.instance().isEnabled()) {
             subtitleFetcher = SubtitleFetcher.start(videoFile, SubtitleStore.instance(), playheadUs);
         }
     }

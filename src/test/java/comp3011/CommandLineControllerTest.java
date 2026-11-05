@@ -181,6 +181,7 @@ class CommandLineControllerTest {
                 "  -m, --mottle-frames    Add cloudy emulsion mottling",
                 "  -b, --bleed-frames     Bleed light into frames",
                 "  -p, --pepper-frames    Pepper frames with dark spots/blotches",
+                "  -S, --subtitle-frames  Add speech-to-text subtitles to frames",
                 "",
                 "Frame processors are applied in command-line order and may be repeated.",
                 "Example: -nssnfwyvdjmbp numbers, scratches twice, numbers again, flickers,",
