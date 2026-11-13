@@ -60,6 +60,10 @@ import javafx.scene.image.Image;
  * interrupts. The end of the video is signalled by
  * {@link PipelineFrame#END_OF_STREAM}, which every stage forwards before it
  * finishes. A pipeline is single use: seeking builds a new one.</li>
+ * <li><b>Failures are never silent:</b> a pipeline thread that dies from any
+ * Throwable, including an Error such as running out of memory, reports it to
+ * the error handler instead of just disappearing and leaving the display
+ * frozen on its last frame.</li>
  * </ul>
  */
 public final class FramePipeline {
@@ -235,8 +239,8 @@ public final class FramePipeline {
             } while (!last);
         } catch (InterruptedException e) {
             // stop() asked us to finish. This is normal shutdown, so there is nothing to report.
-        } catch (Exception e) {
-            errorHandler.accept(e);
+        } catch (Throwable failure) {
+            report(failure);
         }
     }
 
@@ -250,8 +254,16 @@ public final class FramePipeline {
             } while (!last);
         } catch (InterruptedException e) {
             // stop() asked us to finish. This is normal shutdown, so there is nothing to report.
-        } catch (Exception e) {
-            errorHandler.accept(e);
+        } catch (Throwable failure) {
+            report(failure);
         }
+    }
+
+    // Throwable, not Exception: an Error (for example running out of memory) would otherwise kill this thread with
+    // nothing reported, and the display would sit on its last frame forever.
+    private void report(Throwable failure) {
+        System.out.println("Pipeline thread " + Thread.currentThread().getName() + " failed: " + failure);
+        Exception asException = failure instanceof Exception e ? e : new Exception(failure);
+        errorHandler.accept(asException);
     }
 }

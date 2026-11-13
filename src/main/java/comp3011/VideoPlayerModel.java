@@ -43,7 +43,9 @@ import javafx.scene.image.Image;
  * bounded queue. The JavaFX thread is the last stage: it owns the playback
  * clock, pause state, audio output and the display. On every animation heart
  * beat it writes any audio that is due and shows the frame at the head of the
- * queue if that frame is due. It never blocks.
+ * queue if that frame is due. If the display has fallen well behind the clock
+ * it skips the frames that are already late, so playback keeps real time and
+ * always reaches the end. It never blocks.
  * </p>
  *
  * <p>
@@ -67,12 +69,22 @@ import javafx.scene.image.Image;
  * shares nothing with the pipeline. It reads a volatile playhead and writes
  * cues to the {@link SubtitleStore}, which the effect stage reads without
  * locking.</li>
+ * <li>Stall watchdog: a daemon thread that only reads two volatile fields and
+ * prints diagnostics. It never touches playback state.</li>
  * </ul>
  */
 public class VideoPlayerModel {
     private static final long NO_SEEK_REQUEST = -1; // Sentinel value used when no seek position is active.
     private static final long FIVE_SECONDS_US = 5_000_000L;
     private static final long AUDIO_LEAD_NS = 30_000_000L;
+
+    // A frame is skipped only when it is at least this many frame durations late and a newer frame is already due.
+    private static final int LATE_FRAMES_BEFORE_SKIP = 2;
+    private static final int MAX_FRAMES_SKIPPED_PER_BEAT = 10;
+
+    // Watchdog: if no frame is shown for this long while playing, print a diagnostic dump once.
+    private static final long STALL_NS = 3_000_000_000L;
+    private static final long WATCHDOG_POLL_MS = 1_000L;
 
     private final List<FrameProcessor> frameProcessors;
     private final BiConsumer<Integer, Integer> videoSizeChangedHandler;
@@ -84,6 +96,10 @@ public class VideoPlayerModel {
     // State shared between the decoder thread and the JavaFX thread. Every access goes through a thread-safe type.
     private final Queue<PendingAudio> pendingAudio = new ConcurrentLinkedQueue<>();
     private volatile boolean audioOutputEnabled;
+
+    // Written by the JavaFX thread, read by the watchdog thread.
+    private volatile long lastFrameShownNs = System.nanoTime();
+    private volatile boolean watchdogActive;
 
     // This is the critical wiring that allows the framework (JavaFX) to call
     // into our model logic every time it goes around its event loop. Every GUI
@@ -145,6 +161,7 @@ public class VideoPlayerModel {
         this.statusChangedHandler = statusChangedHandler;
         this.playbackStateChangedHandler = playbackStateChangedHandler;
         this.audioOutputStateChangedHandler = audioOutputStateChangedHandler;
+        startWatchdog();
     }
 
     public void play(File file) {
@@ -283,6 +300,7 @@ public class VideoPlayerModel {
             openPlaybackResources(startTimestampUs);
             resetPlaybackClock(currentTimestampUs);
             playbackOpen = true;
+            KeepAwake.begin();
             playbackTimer.start();
             startSubtitleFetcher(currentTimestampUs);
             startPipeline();
@@ -361,7 +379,9 @@ public class VideoPlayerModel {
         if (subtitleFetcher != null) {
             subtitleFetcher.setPlayheadUs(playheadUs);
         } else if (videoFile != null && SubtitleStore.instance().isEnabled()) {
-            subtitleFetcher = SubtitleFetcher.start(videoFile, SubtitleStore.instance(), playheadUs);
+            // The player already knows how long the media is, so the fetcher need not open a decoder to find out.
+            long durationUs = videoDurationUs != NO_SEEK_REQUEST ? videoDurationUs : 0;
+            subtitleFetcher = SubtitleFetcher.start(videoFile, SubtitleStore.instance(), playheadUs, durationUs);
         }
     }
 
@@ -417,6 +437,8 @@ public class VideoPlayerModel {
         while (!Thread.currentThread().isInterrupted()) {
             Frame frame = grabFrame();
             if (frame == null) {
+                System.out.printf("Decoder reached the end of the media at frame %d (%d us)%n",
+                        grabber.getFrameNumber(), grabber.getTimestamp());
                 return PipelineFrame.END_OF_STREAM;
             }
 
@@ -508,11 +530,43 @@ public class VideoPlayerModel {
         // the picture. Every other frame waits in the pipeline until playback resumes.
         if (targetTimeNs <= now && (!pauseRequested || firstFrameOfSession)) {
             current.pollReady(); // We are the only consumer, so this removes the frame we just peeked.
-            displayPreparedFrame(next, relativeTimestampUs, targetTimeNs);
+
+            PipelineFrame shown = next;
+            long shownRelativeUs = relativeTimestampUs;
+            long shownTargetNs = targetTimeNs;
+
+            // If the display is well behind the clock, jump straight to the newest frame that is already due instead
+            // of showing every late frame in turn. Otherwise a slow machine plays in slow motion and never finishes.
+            // Frames are only skipped while they are more than a couple of frame durations late, and never while
+            // paused, so a healthy player shows every frame exactly as before.
+            if (!pauseRequested && videoFrameDurationUs > 0) {
+                long lateNs = (long) LATE_FRAMES_BEFORE_SKIP * videoFrameDurationUs * 1_000L;
+                for (int i = 0; i < MAX_FRAMES_SKIPPED_PER_BEAT; i++) {
+                    if (shownTargetNs + lateNs > now) {
+                        break; // The frame we have is not late enough to be worth skipping.
+                    }
+                    PipelineFrame following = current.peekReady();
+                    if (following == null || following.isEndOfStream()) {
+                        break;
+                    }
+                    long followingRelativeUs = Math.max(0, following.mediaTimestampUs() - firstTimestampUs);
+                    long followingTargetNs = playbackStartNs + followingRelativeUs * 1_000L;
+                    if (followingTargetNs > now) {
+                        break; // The next frame is not due yet.
+                    }
+                    current.pollReady();
+                    shown = following;
+                    shownRelativeUs = followingRelativeUs;
+                    shownTargetNs = followingTargetNs;
+                }
+            }
+
+            displayPreparedFrame(shown, shownRelativeUs, shownTargetNs);
         }
     }
 
     private void displayPreparedFrame(PipelineFrame frame, long relativeTimestampUs, long targetTimeNs) {
+        lastFrameShownNs = System.nanoTime();
         currentTimestampUs = logicalPlaybackBaseUs + relativeTimestampUs;
         relativeSeekBaseUs = NO_SEEK_REQUEST;
         updateSubtitlePlayhead(currentTimestampUs); // A volatile write, so cheap enough for every frame.
@@ -587,6 +641,7 @@ public class VideoPlayerModel {
     }
 
     private void closePlaybackResources() {
+    	KeepAwake.end();
         playbackTimer.stop();
         playbackOpen = false;
 
@@ -689,11 +744,56 @@ public class VideoPlayerModel {
     }
 
     private void notifyPlaybackStateChanged() {
+        // The watchdog only expects frames while playing, so it is told on every state change.
+        watchdogActive = playbackOpen && !pauseRequested;
+        lastFrameShownNs = System.nanoTime();
         playbackStateChangedHandler.accept(playbackOpen, pauseRequested);
     }
 
     private void notifyAudioOutputStateChanged() {
         audioOutputStateChangedHandler.accept(audioOutputEnabled);
+    }
+
+    // ---- Stall watchdog (diagnostics only) ----
+
+    // Runs on its own daemon thread so it still works if the JavaFX thread is the one that is stuck. It only reads
+    // two volatile fields. When no frame has been shown for a few seconds while playing, it prints one dump of the
+    // memory, cores and every thread's stack, which shows on TITAN where the player is waiting.
+    private void startWatchdog() {
+        Thread watchdog = new Thread(() -> {
+            boolean reported = false;
+            while (true) {
+                try {
+                    Thread.sleep(WATCHDOG_POLL_MS);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                boolean stalled = watchdogActive && System.nanoTime() - lastFrameShownNs > STALL_NS;
+                if (stalled && !reported) {
+                    reported = true;
+                    dumpStall();
+                } else if (!stalled) {
+                    reported = false;
+                }
+            }
+        }, "stall-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
+    }
+
+    private void dumpStall() {
+        Runtime runtime = Runtime.getRuntime();
+        System.out.printf("STALL: no frame shown for 3 s. Heap %d of %d MB, cores %d, pendingAudio %d%n",
+                (runtime.totalMemory() - runtime.freeMemory()) >> 20,
+                runtime.maxMemory() >> 20,
+                runtime.availableProcessors(),
+                pendingAudio.size());
+        Thread.getAllStackTraces().forEach((thread, trace) -> {
+            System.out.println("  Thread " + thread.getName() + " " + thread.getState());
+            for (StackTraceElement element : trace) {
+                System.out.println("    at " + element);
+            }
+        });
     }
 
     // Created by the decoder thread, then only ever used by the JavaFX thread once it has been queued.
